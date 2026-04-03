@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI, Part } from '@google/generative-ai';
+import OpenAI from 'openai';
 import { getDecision, RawClaim } from '@/lib/fraudModel';
 import {
   AnalyzeClaimRequest,
@@ -28,11 +28,13 @@ function getServiceClient() {
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();
+  let supabase: ReturnType<typeof getServiceClient> | null = null;
+  let claimId: string | null = null;
 
   try {
     const body: AnalyzeClaimRequest = await req.json();
     const {
-      claimId,
+      claimId: cId,
       policyContext,
       incidentDate,
       description,
@@ -45,119 +47,150 @@ export async function POST(req: NextRequest) {
       dynamicPolicyRules,
     } = body;
 
+    claimId = cId;
+
     if (!claimId || !policyContext || !incidentDate || !description) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const supabase = getServiceClient();
+    supabase = getServiceClient();
 
     // Helper to write step progress to Supabase in real-time
     const setStep = async (step: string) => {
-      const { error } = await supabase
+      const { error } = await supabase!
         .from('claims')
         .update({ processing_step: step, updated_at: new Date().toISOString() })
         .eq('id', claimId);
       if (error) console.error(`[analyze-claim] setStep(${step}) error:`, error.message);
     };
 
+    // Helper to write error state to Supabase so the UI can surface it
+    const setError = async (step: string, message: string) => {
+      console.error(`[analyze-claim] Pipeline failed at step "${step}": ${message}`);
+      const { error } = await supabase!
+        .from('claims')
+        .update({
+          processing_step: 'failed',
+          error_step: step,
+          error_message: message,
+          status: 'PROCESSING', // keep as PROCESSING so it doesn't look decided
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', claimId);
+      if (error) console.error(`[analyze-claim] setError DB write failed:`, error.message);
+    };
+
     // ── Step 1: Mark PROCESSING + doc_verification ─────────────────────────
     await supabase
       .from('claims')
-      .update({ status: 'PROCESSING', processing_step: 'doc_verification', updated_at: new Date().toISOString() })
+      .update({
+        status: 'PROCESSING',
+        processing_step: 'doc_verification',
+        error_message: null,
+        error_step: null,
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', claimId);
 
     // ── Step 2: Fetch dynamic policy rules from DB if not provided ─────────
     let resolvedDynamicRules = dynamicPolicyRules;
-    if (!resolvedDynamicRules) {
-      const { data: rulesData } = await supabase
-        .from('policy_rules')
-        .select('markdown_content, title')
-        .eq('is_active', true)
-        .in('policy_type', [policyContext.policyType, 'global'])
-        .order('policy_type', { ascending: false });
+    try {
+      if (!resolvedDynamicRules) {
+        const { data: rulesData, error: rulesError } = await supabase
+          .from('policy_rules')
+          .select('markdown_content, title')
+          .eq('is_active', true)
+          .in('policy_type', [policyContext.policyType, 'global'])
+          .order('policy_type', { ascending: false });
 
-      if (rulesData && rulesData.length > 0) {
-        resolvedDynamicRules = rulesData
-          .map((r: any) => `## ${r.title}\n${r.markdown_content}`)
-          .join('\n\n');
+        if (rulesError) {
+          console.warn('[analyze-claim] Could not fetch policy rules:', rulesError.message);
+        } else if (rulesData && rulesData.length > 0) {
+          resolvedDynamicRules = rulesData
+            .map((r: any) => `## ${r.title}\n${r.markdown_content}`)
+            .join('\n\n');
+        }
       }
+    } catch (rulesErr: any) {
+      // Non-fatal: continue without dynamic rules
+      console.warn('[analyze-claim] Policy rules fetch threw:', rulesErr?.message);
     }
 
     // ── Step 3: Build policy rules and prompts ─────────────────────────────
-    const policyRules = buildPolicyRules(policyContext);
-    const userPrompt = buildAnalysisPrompt(
-      incidentDate,
-      description,
-      claimType,
-      claimedAmount,
-      location,
-      policyRules,
-      resolvedDynamicRules,
-    );
-    const systemPrompt = getSystemPrompt(policyContext.policyType);
+    let policyRules: string;
+    let userPrompt: string;
+    let systemPrompt: string;
+    try {
+      policyRules = buildPolicyRules(policyContext);
+      userPrompt = buildAnalysisPrompt(
+        incidentDate,
+        description,
+        claimType,
+        claimedAmount,
+        location,
+        policyRules,
+        resolvedDynamicRules,
+      );
+      systemPrompt = getSystemPrompt(policyContext.policyType);
+    } catch (promptErr: any) {
+      await setError('doc_verification', `Failed to build analysis prompt: ${promptErr?.message ?? 'Unknown error'}`);
+      return NextResponse.json({ error: promptErr?.message ?? 'Prompt build failed', success: false }, { status: 500 });
+    }
 
     // ── Doc verification done — advance to AI Damage Analysis ─────────────
     await setStep('ai_damage');
 
-    // ── Step 4: Build Gemini parts with inlineData for docs/images ─────────
-    const geminiParts: Part[] = [
-      { text: `${systemPrompt}\n\n${userPrompt}` },
-    ];
+    // ── Step 4: Build prompt content for Groq ─────────────────────────────
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}
 
-    // Attach damage photo if provided
-    if (damagePhotoBase64 && damageMimeType) {
-      // Strip data URI prefix if present
-      const cleanBase64 = damagePhotoBase64.replace(/^data:[^;]+;base64,/, '');
-      geminiParts.push({
-        inlineData: {
-          mimeType: damageMimeType as any,
-          data: cleanBase64,
-        },
-      });
-    }
+IMPORTANT: Return ONLY a valid JSON object with no markdown fences, no explanation. The JSON must contain exactly these fields: summary, estimatedCostINR, severity, confidenceScore, fraudScore, policyComplianceScore, fraudFlags, policyFlags, rulesPassed, rulesFailed, claimantMessage, requiresEscalation, escalationReason, ocrExtracted, imageDescriptionMatch, recommendedDecision, dateComparisonResult, dateMismatchDetected.`;
 
-    // Attach each document file
-    for (const doc of documentFiles) {
-      if (doc.base64 && doc.mimeType) {
-        const cleanBase64 = doc.base64.replace(/^data:[^;]+;base64,/, '');
-        geminiParts.push({
-          inlineData: {
-            mimeType: doc.mimeType as any,
-            data: cleanBase64,
-          },
-        });
-      }
-    }
-
-    // Append strict JSON output instruction
-    geminiParts.push({
-      text: `\n\nIMPORTANT: Return ONLY a valid JSON object with no markdown fences, no explanation. The JSON must contain exactly these fields: summary, estimatedCostINR, severity, confidenceScore, fraudScore, policyComplianceScore, fraudFlags, policyFlags, rulesPassed, rulesFailed, claimantMessage, requiresEscalation, escalationReason, ocrExtracted, imageDescriptionMatch, recommendedDecision, dateComparisonResult, dateMismatchDetected.`,
-    });
-
-    // ── Step 5: Call Gemini 1.5 Flash directly via SDK ─────────────────────
-    const apiKey = process.env.GEMINI_API_KEY;
+    // ── Step 5: Call Groq via OpenAI-compatible SDK ────────────────────────
+    const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not configured');
+      await setError('ai_damage', 'GROQ_API_KEY is not configured on the server.');
+      return NextResponse.json({ error: 'GROQ_API_KEY is not configured', success: false }, { status: 500 });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    let rawContent: string;
+    try {
+      const client = new OpenAI({
+        apiKey,
+        baseURL: 'https://api.groq.com/openai/v1',
+      });
 
-    const geminiApiResult = await model.generateContent(geminiParts);
-    const rawContent = geminiApiResult.response.text();
+      const groqResponse = await client.chat.completions.create({
+        model: 'openai/gpt-oss-120b',
+        messages: [
+          { role: 'user', content: fullPrompt },
+        ],
+      });
 
-    // ── Step 6: Parse Gemini JSON response ────────────────────────────────
+      rawContent = groqResponse.choices[0]?.message?.content ?? '';
+    } catch (groqErr: any) {
+      const msg = groqErr?.message ?? 'Groq API call failed';
+      await setError('ai_damage', `AI Analysis failed: ${msg}`);
+      return NextResponse.json({ error: msg, success: false }, { status: 500 });
+    }
+
+    // ── Step 6: Parse Groq JSON response ──────────────────────────────────
     let geminiResult: GeminiAnalysisResult;
     try {
       const cleaned = rawContent.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
       geminiResult = JSON.parse(cleaned);
     } catch {
-      const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        geminiResult = JSON.parse(jsonMatch[0]);
-      } else {
+      try {
+        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          geminiResult = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('No JSON object found in Gemini response');
+        }
+      } catch (parseErr: any) {
         console.error('[analyze-claim] Gemini raw response:', rawContent.slice(0, 500));
-        throw new Error('Gemini returned non-JSON response');
+        const msg = `AI returned an unparseable response. Raw preview: "${rawContent.slice(0, 120)}"`;
+        await setError('ai_damage', msg);
+        return NextResponse.json({ error: msg, success: false }, { status: 500 });
       }
     }
 
@@ -165,23 +198,29 @@ export async function POST(req: NextRequest) {
     await setStep('policy_verification');
 
     // ── Step 7: Run fraudModel ML pipeline ────────────────────────────────
-    const incidentDateObj = new Date(incidentDate);
-    const rawClaim: RawClaim = {
-      incident_date: incidentDate,
-      incident_month: incidentDateObj.getMonth() + 1,
-      incident_day: incidentDateObj.getDate(),
-      total_claim_amount: claimedAmount,
-      incident_type: claimType,
-      incident_severity: geminiResult.severity === 'HIGH' ? 'Major Damage'
-        : geminiResult.severity === 'MEDIUM' ? 'Minor Damage' : 'Trivial Damage',
-      property_damage: geminiResult.fraudFlags?.length > 0 ? 'YES' : 'NO',
-      police_report_available: (geminiResult.rulesPassed || []).some((r: string) =>
-        r.toLowerCase().includes('fir') || r.toLowerCase().includes('police'),
-      ) ? 'YES' : 'NO',
-      authorities_contacted: geminiResult.fraudFlags?.length > 0 ? 'Police' : 'None',
-    };
-
-    const mlResult = getDecision(rawClaim, geminiResult.policyComplianceScore > 0.6);
+    let mlResult: ReturnType<typeof getDecision>;
+    try {
+      const incidentDateObj = new Date(incidentDate);
+      const rawClaim: RawClaim = {
+        incident_date: incidentDate,
+        incident_month: incidentDateObj.getMonth() + 1,
+        incident_day: incidentDateObj.getDate(),
+        total_claim_amount: claimedAmount,
+        incident_type: claimType,
+        incident_severity: geminiResult.severity === 'HIGH' ? 'Major Damage'
+          : geminiResult.severity === 'MEDIUM' ? 'Minor Damage' : 'Trivial Damage',
+        property_damage: geminiResult.fraudFlags?.length > 0 ? 'YES' : 'NO',
+        police_report_available: (geminiResult.rulesPassed || []).some((r: string) =>
+          r.toLowerCase().includes('fir') || r.toLowerCase().includes('police'),
+        ) ? 'YES' : 'NO',
+        authorities_contacted: geminiResult.fraudFlags?.length > 0 ? 'Police' : 'None',
+      };
+      mlResult = getDecision(rawClaim, geminiResult.policyComplianceScore > 0.6);
+    } catch (mlErr: any) {
+      const msg = `Fraud model failed: ${mlErr?.message ?? 'Unknown error'}`;
+      await setError('policy_verification', msg);
+      return NextResponse.json({ error: msg, success: false }, { status: 500 });
+    }
 
     // ── Advance to Fraud Check step ───────────────────────────────────────
     await setStep('fraud_check');
@@ -235,6 +274,8 @@ export async function POST(req: NextRequest) {
     const updatePayload: Record<string, any> = {
       status: finalStatus,
       processing_step: 'completed',
+      error_message: null,
+      error_step: null,
       fraud_score: combinedFraudScore,
       confidence_score: combinedConfidence,
       rules_triggered: geminiResult.rulesPassed || [],
@@ -284,9 +325,26 @@ export async function POST(req: NextRequest) {
       processingTimeSec,
     });
   } catch (err: any) {
-    console.error('[analyze-claim] Pipeline error:', err?.message ?? err);
+    const msg = err?.message ?? 'Analysis failed';
+    console.error('[analyze-claim] Unhandled pipeline error:', msg);
+    // Write error to Supabase if we have enough context
+    if (supabase && claimId) {
+      try {
+        await supabase
+          .from('claims')
+          .update({
+            processing_step: 'failed',
+            error_step: 'unknown',
+            error_message: `Unexpected error: ${msg}`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', claimId);
+      } catch (dbErr) {
+        console.error('[analyze-claim] Could not write error to DB:', dbErr);
+      }
+    }
     return NextResponse.json(
-      { error: err?.message ?? 'Analysis failed', success: false },
+      { error: msg, success: false },
       { status: 500 },
     );
   }
