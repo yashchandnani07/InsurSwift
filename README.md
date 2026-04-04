@@ -1,91 +1,220 @@
-# Next.js
+# InsureSwift 🛡️
 
-A modern Next.js 15 application built with TypeScript and Tailwind CSS.
+> AI-powered insurance claims management platform with real-time fraud detection, automated workflows, and intelligent risk analysis.
 
-## 🚀 Features
+🌐 **Live Demo**: [Here](https://insureswif3273.builtwithrocket.new)
 
-- **Next.js 15** - Latest version with improved performance and features
-- **React 19** - Latest React version with enhanced capabilities
-- **Tailwind CSS** - Utility-first CSS framework for rapid UI development
+---
 
-## 🛠️ Installation
+## ✨ Features
 
-1. Install dependencies:
-  ```bash
-  npm install
-  # or
-  yarn install
-  ```
+### 🤖 AI-Powered Claim Analysis
+- Automated fraud detection using Google Gemini AI
+- Real-time risk scoring (High / Medium / Low) stored per claim
+- Fraud reasoning engine with detailed explainability
+- Claim similarity detection to identify duplicate or related claims
 
-2. Start the development server:
-  ```bash
-  npm run dev
-  # or
-  yarn dev
-  ```
-3. Open [http://localhost:4028](http://localhost:4028) with your browser to see the result.
+### 📊 Admin Dashboard
+- KPI bento grid with live metrics (total claims, approval rates, fraud flags)
+- Claims volume chart over time
+- Fraud distribution chart by risk level (High / Medium / Low)
+- Status distribution chart (Pending / Approved / Rejected / Escalated)
+- Recent claims feed and escalations table
+- Email metrics dashboard with interaction logs
+
+### 🕵️ Fraud Network Graph
+- Interactive visual graph mapping claim relationships
+- Nodes colored by risk level for instant pattern recognition
+- Powered by real stored `risk_level` and `fraud_score` from the database
+
+### 📋 Claims Management
+- Full claims table with filtering, sorting, and search
+- Claim detail drawer with AI analysis results, fraud score gauge, and status history
+- One-click approve / reject / escalate actions
+- Claim similarity engine to surface related claims
+
+### 🚨 Escalation Queue
+- Dedicated queue for high-risk or flagged claims
+- Detailed escalation view with AI reasoning and audit trail
+- Admin decision workflow with email notifications
+
+### 📁 Policy Manager
+- Create and manage insurance policies
+- Policy rules table with configurable thresholds
+- Assign policies to claimants
+
+### 📝 File a Claim
+- Guided multi-step claim submission form for claimants
+- Automatic AI analysis triggered on submission
+- Real-time processing status updates
+
+### 📬 Email Automation (Resend)
+- Automated claim submission confirmation emails to claimants
+- Admin notification emails on new claim submission
+- Approval / rejection decision emails with custom messaging
+- Resend reply webhook for two-way email interactions
+- Admin email whitelist management
+
+### 🔐 Authentication & Authorization
+- Supabase Auth with email/password sign-up and login
+- Email verification flow for new accounts
+- Role-based access: Admin vs. Claimant views
+- Protected routes via Next.js middleware
+- Demo admin credentials for quick evaluation
+
+### 📜 Audit Log
+- Full audit trail of all admin actions
+- Timestamped records of claim decisions, escalations, and policy changes
+
+### 🧑‍💼 Claimant Dashboard
+- Personal claim status tracker
+- Claim history with AI risk scores and decision outcomes
+- Real-time status updates
+
+### 💬 AI Assistant
+- In-app AI chat assistant powered by Gemini
+- Context-aware responses for claims and policy queries
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 15 (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS v3 |
+| Database | Supabase (PostgreSQL) |
+| Auth | Supabase Auth |
+| AI | Google Gemini (`@google/generative-ai`) |
+| Email | Resend |
+| Charts | Recharts |
+| Icons | Heroicons + Lucide React |
+| Notifications | Sonner |
+
+---
 
 ## 📁 Project Structure
 
 ```
-nextjs/
-├── public/             # Static assets
+insureswift/
+├── public/
+│   └── assets/images/          # Static images and logo
 ├── src/
-│   ├── app/            # App router components
-│   │   ├── layout.tsx  # Root layout component
-│   │   └── page.tsx    # Main page component
-│   ├── components/     # Reusable UI components
-│   ├── styles/         # Global styles and Tailwind configuration
-├── next.config.mjs     # Next.js configuration
-├── package.json        # Project dependencies and scripts
-├── postcss.config.js   # PostCSS configuration
-└── tailwind.config.js  # Tailwind CSS configuration
-
+│   ├── app/
+│   │   ├── admin-dashboard/    # Admin KPI, charts, feeds
+│   │   ├── claims-management/  # Claims table, drawer, similarity
+│   │   ├── claimant-dashboard/ # Claimant personal view
+│   │   ├── escalation-queue/   # Escalation workflow
+│   │   ├── fraud-network/      # Fraud graph visualization
+│   │   ├── fraud-reasoning-engine/ # AI fraud explainability
+│   │   ├── file-claim/         # Claim submission form
+│   │   ├── claim-status/       # Claim status tracker
+│   │   ├── policy-manager/     # Policy CRUD
+│   │   ├── audit-log/          # Audit trail
+│   │   ├── login/              # Auth pages
+│   │   ├── signup/
+│   │   └── api/                # Next.js API routes
+│   │       ├── analyze-claim/  # AI claim analysis
+│   │       ├── fraud-network/  # Fraud graph data
+│   │       ├── fraud-reasoning/
+│   │       ├── claim-similarity/
+│   │       ├── send-claim-email/
+│   │       ├── seed-demo/
+│   │       ├── admin/          # Admin actions & email
+│   │       ├── ai/             # Chat completion
+│   │       └── webhooks/       # Resend reply webhook
+│   ├── components/             # Shared UI components
+│   ├── contexts/               # Auth & Claim context providers
+│   ├── lib/                    # Utilities, types, AI client
+│   └── styles/                 # Global CSS & Tailwind
+├── supabase/
+│   ├── migrations/             # Database schema migrations
+│   └── functions/              # Supabase Edge Functions (email)
+├── next.config.mjs
+├── tailwind.config.js
+└── package.json
 ```
 
-## 🧩 Page Editing
+---
 
-You can start editing the page by modifying `src/app/page.tsx`. The page auto-updates as you edit the file.
+## 🚀 Getting Started
 
-## 🎨 Styling
+### Prerequisites
+- Node.js 18+
+- A Supabase project
+- Resend account (for email)
+- Google Gemini API key
 
-This project uses Tailwind CSS for styling with the following features:
-- Utility-first approach for rapid development
-- Custom theme configuration
-- Responsive design utilities
-- PostCSS and Autoprefixer integration
+### Installation
+
+```bash
+npm install
+```
+
+### Environment Variables
+
+Create a `.env` file with:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=your-supabase-url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+GEMINI_API_KEY=your-gemini-api-key
+RESEND_API_KEY=your-resend-api-key
+NEXT_PUBLIC_SITE_URL=https://insureswif3273.builtwithrocket.new
+```
+
+### Run Development Server
+
+```bash
+npm run dev
+```
+
+Open [http://localhost:4028](http://localhost:4028) in your browser.
+
+### Build for Production
+
+```bash
+npm run build
+npm run serve
+```
+
+---
 
 ## 📦 Available Scripts
 
-- `npm run dev` - Start development server on port 4028
-- `npm run build` - Build the application for production
-- `npm run start` - Start the development server
-- `npm run serve` - Start the production server
-- `npm run lint` - Run ESLint to check code quality
-- `npm run lint:fix` - Fix ESLint issues automatically
-- `npm run format` - Format code with Prettier
+| Script | Description |
+|---|---|
+| `npm run dev` | Start development server on port 4028 |
+| `npm run build` | Build for production |
+| `npm run serve` | Start production server |
+| `npm run lint` | Run ESLint |
+| `npm run lint:fix` | Auto-fix ESLint issues |
+| `npm run format` | Format code with Prettier |
+| `npm run type-check` | TypeScript type checking |
 
-## 📱 Deployment
+---
 
-Build the application for production:
+## 🔑 Demo Credentials
 
-  ```bash
-  npm run build
-  ```
+| Role | Email | Password |
+|---|---|---|
+| Admin (LIC) | yash.chandnani07@gmail.com | abc@1234 |
 
-## 📚 Learn More
+> Use the **"Try Demo"** button on the login page to auto-fill admin credentials.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial
-
-You can check out the [Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
 ## 🙏 Acknowledgments
 
 - Built with [Rocket.new](https://rocket.new)
-- Powered by Next.js and React
-- Styled with Tailwind CSS
+- Powered by [Next.js](https://nextjs.org) and [React](https://react.dev)
+- Database & Auth by [Supabase](https://supabase.com)
+- AI by [Google Gemini](https://ai.google.dev)
+- Email by [Resend](https://resend.com)
+- Styled with [Tailwind CSS](https://tailwindcss.com)
 
-Built with ❤️ on Rocket.new
+---
+
+Built with ❤️ on [Rocket.new](https://rocket.new)
